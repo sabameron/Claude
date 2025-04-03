@@ -47,8 +47,11 @@ class ProcedureValidator:
                 self.errors.append(f"ファイルID {file_id} が重複しています")
             file_ids.add(file_id)
             
-            # 新規・修正の場合はコード管理番号をチェック
+            # 新規・修正の場合はコード管理番号をチェック（JSONファイル以外）
             if action in ["新規", "修正"]:
+                # JSONファイルかどうかのチェック
+                is_json_file = file_path.lower().endswith('.json')
+                
                 # ファイルセクションの内容を取得
                 file_end_pattern = r'### (新規|修正|削除),\d{5},[^\n]+(?:\nコミット内容：[^\n]+)?\n(.*?)(?=### |\Z)'
                 file_content_match = re.search(file_end_pattern, self.content[match.start():], re.DOTALL)
@@ -56,36 +59,37 @@ class ProcedureValidator:
                 if file_content_match:
                     file_content = file_content_match.group(2)
                     
-                    # コード管理番号のチェック
-                    if action == "新規":
-                        # 新規ファイルの場合
-                        code_numbers = re.findall(r'(?://|#|<!--|/\*) #(\d{5})', file_content)
-                        if not code_numbers:
-                            self.errors.append(f"ファイルID {file_id} のコード管理番号が見つかりません")
+                    # JSONファイル以外の場合のみコード管理番号をチェック
+                    if not is_json_file:
+                        if action == "新規":
+                            # 新規ファイルの場合
+                            code_numbers = re.findall(r'(?://|#|<!--|/\*) #(\d{5})', file_content)
+                            if not code_numbers:
+                                self.errors.append(f"ファイルID {file_id} のコード管理番号が見つかりません")
+                            
+                            # 連番かつ一意のチェック
+                            unique_numbers = set(code_numbers)
+                            if len(code_numbers) != len(unique_numbers):
+                                self.errors.append(f"ファイルID {file_id} のコード管理番号に重複があります")
                         
-                        # 連番かつ一意のチェック
-                        unique_numbers = set(code_numbers)
-                        if len(code_numbers) != len(unique_numbers):
-                            self.errors.append(f"ファイルID {file_id} のコード管理番号に重複があります")
-                    
-                    elif action == "修正":
-                        # 修正区間のチェック
-                        modification_sections = re.finditer(r'#### #(\d{5})-#(\d{5})\n```[a-z]*\n(.*?)```', file_content, re.DOTALL)
-                        for mod_match in modification_sections:
-                            start_code = mod_match.group(1)
-                            end_code = mod_match.group(2)
-                            mod_content = mod_match.group(3)
-                            
-                            # 修正区間内にコード管理番号があるかチェック
-                            section_code_numbers = re.findall(r'(?://|#|<!--|/\*) #(\d{5})', mod_content)
-                            if not section_code_numbers:
-                                self.errors.append(f"ファイルID {file_id} の修正区間 #{start_code}-#{end_code} にコード管理番号が見つかりません")
-                            
-                            # 修正区間の開始と終了コードが含まれているかチェック
-                            if start_code not in section_code_numbers:
-                                self.errors.append(f"ファイルID {file_id} の修正区間 #{start_code}-#{end_code} に開始コード #{start_code} が含まれていません")
-                            if end_code not in section_code_numbers:
-                                self.errors.append(f"ファイルID {file_id} の修正区間 #{start_code}-#{end_code} に終了コード #{end_code} が含まれていません")
+                        elif action == "修正":
+                            # 修正区間のチェック
+                            modification_sections = re.finditer(r'#### #(\d{5})-#(\d{5})\n```[a-z]*\n(.*?)```', file_content, re.DOTALL)
+                            for mod_match in modification_sections:
+                                start_code = mod_match.group(1)
+                                end_code = mod_match.group(2)
+                                mod_content = mod_match.group(3)
+                                
+                                # 修正区間内にコード管理番号があるかチェック（JSONファイル以外）
+                                section_code_numbers = re.findall(r'(?://|#|<!--|/\*) #(\d{5})', mod_content)
+                                if not section_code_numbers:
+                                    self.errors.append(f"ファイルID {file_id} の修正区間 #{start_code}-#{end_code} にコード管理番号が見つかりません")
+                                
+                                # 修正区間の開始と終了コードが含まれているかチェック（JSONファイル以外）
+                                if start_code not in section_code_numbers:
+                                    self.errors.append(f"ファイルID {file_id} の修正区間 #{start_code}-#{end_code} に開始コード #{start_code} が含まれていません")
+                                if end_code not in section_code_numbers:
+                                    self.errors.append(f"ファイルID {file_id} の修正区間 #{start_code}-#{end_code} に終了コード #{end_code} が含まれていません")
         
         return len(self.errors) == 0
     
@@ -274,7 +278,11 @@ class ProcedureParser:
                 elif action == "modify":
                     # ファイル修正
                     if key in self.file_modifications and os.path.exists(full_path):
-                        self._modify_file(full_path, self.file_modifications[key])
+                        # JSONファイルの場合は特別な処理
+                        if file_path.lower().endswith('.json'):
+                            self._modify_json_file(full_path, self.file_modifications[key])
+                        else:
+                            self._modify_file(full_path, self.file_modifications[key])
                         print(f"ファイル更新: {full_path}")
                     else:
                         print(f"警告: ファイル {file_path} の修正情報が見つからないか、ファイルが存在しません")
@@ -299,6 +307,47 @@ class ProcedureParser:
                         f.write(f"{cmd}\n")
                 os.chmod(script_path, 0o755)  # 実行権限を付与
                 print(f"実行スクリプト作成: {script_path}")
+    
+    def _modify_json_file(self, file_path, modifications):
+        """JSONファイルの修正を行う（コード管理番号を使用しない）"""
+        try:
+            import json
+            # ファイル内容の読み込み
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # バックアップの作成
+            backup_path = file_path + ".bak"
+            shutil.copy2(file_path, backup_path)
+            
+            # JSONファイルの場合は、修正内容そのものをファイルに書き込む
+            # 最初の修正区間の内容を使用（通常、JSONファイルでは修正区間は1つのみ）
+            if modifications and len(modifications) > 0:
+                new_content = modifications[0]["content"]
+                
+                # 内容を整形して書き込む
+                try:
+                    # JSONとして解析してフォーマット
+                    parsed_json = json.loads(new_content)
+                    formatted_json = json.dumps(parsed_json, indent=2, ensure_ascii=False)
+                    
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(formatted_json)
+                except json.JSONDecodeError:
+                    # JSON解析エラーの場合は元の内容をそのまま書き込む
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(new_content)
+            
+            # バックアップを削除
+            os.remove(backup_path)
+            
+        except Exception as e:
+            # エラーが発生した場合はバックアップから復元
+            if os.path.exists(backup_path):
+                shutil.copy2(backup_path, file_path)
+                os.remove(backup_path)
+            print(f"JSONファイル修正中にエラーが発生しました: {e}")
+            raise e
     
     def _modify_file(self, file_path, modifications):
         """ファイルの特定範囲を修正する"""
