@@ -7,7 +7,8 @@
 ## 基本的な使用方法
 
 ```bash
-python procedure_parser.py <手順書ファイルパス> <出力ディレクトリ>
+python3 parser.py <手順書ファイルパス> <出力ディレクトリ>
+python3 parser.py howto.txt projects
 ```
 
 ## 必要な環境
