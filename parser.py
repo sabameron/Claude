@@ -3,10 +3,67 @@ import re
 import sys
 import shutil
 import subprocess
+import datetime
+import argparse
 from pathlib import Path
+import binascii  # デバッグ出力用に追加
 
 # スクリプトのバージョン
-VERSION = "1.0.0"
+VERSION = "2.0.0"
+
+# デバッグ用のログ記録
+class DebugLogger:
+    def __init__(self, enabled=False):
+        self.enabled = enabled
+        self.log_dir = None
+        self.log_file = None
+        
+        if enabled:
+            # ログディレクトリを作成
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.log_dir = os.path.join("log", "parser", timestamp)
+            os.makedirs(self.log_dir, exist_ok=True)
+            
+            # ログファイルを作成
+            self.log_file = open(os.path.join(self.log_dir, "parser_debug.log"), "w", encoding="utf-8")
+            self.log("デバッグログを開始しました")
+    
+    def log(self, message, also_print=True):
+        if not self.enabled:
+            return
+            
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        log_message = f"[{timestamp}] {message}"
+        
+        if also_print:
+            print(f"DEBUG: {message}")
+            
+        if self.log_file:
+            self.log_file.write(log_message + "\n")
+            self.log_file.flush()
+    
+    def log_file_content(self, filename, content):
+        if not self.enabled:
+            return
+            
+        # ファイル内容をログフォルダに保存
+        if self.log_dir:
+            base_name = os.path.basename(filename)
+            log_path = os.path.join(self.log_dir, f"content_{base_name}")
+            
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            
+            self.log(f"ファイル内容を {log_path} に保存しました", also_print=False)
+    
+    def close(self):
+        if self.log_file:
+            self.log("デバッグログを終了します")
+            self.log_file.close()
+            self.log_file = None
+
+# グローバル変数としてロガーを初期化
+debug_logger = DebugLogger(enabled=False)
 
 class ProcedureValidator:
     """手順書のフォーマット検証クラス"""
@@ -17,6 +74,8 @@ class ProcedureValidator:
     
     def validate(self):
         """手順書のフォーマットを検証する"""
+        debug_logger.log("手順書の検証を開始")
+        
         # バージョン確認
         if not self._check_version():
             self.errors.append("準拠手順書形式のバージョン情報が見つからないか、フォーマットが不正です")
@@ -43,6 +102,8 @@ class ProcedureValidator:
             file_id = match.group(2)
             file_path = match.group(3)
             
+            debug_logger.log(f"ファイルセクション検出: {action},{file_id},{file_path}")
+            
             if file_id in file_ids:
                 self.errors.append(f"ファイルID {file_id} が重複しています")
             file_ids.add(file_id)
@@ -53,7 +114,7 @@ class ProcedureValidator:
                 is_json_file = file_path.lower().endswith('.json')
                 
                 # ファイルセクションの内容を取得
-                file_end_pattern = r'### (新規|修正|削除),\d{5},[^\n]+(?:\nコミット内容：[^\n]+)?\n(.*?)(?=### |\Z)'
+                file_end_pattern = r'### (新規|修正|削除),\d{5},[^\n]+(?:\nコミット内容：[^\n]+)?\n([\s\S]*?)(?=### |\Z)'
                 file_content_match = re.search(file_end_pattern, self.content[match.start():], re.DOTALL)
                 
                 if file_content_match:
@@ -63,7 +124,13 @@ class ProcedureValidator:
                     if not is_json_file:
                         if action == "新規":
                             # 新規ファイルの場合
-                            code_numbers = re.findall(r'(?://|#|<!--|/\*) #(\d{5})', file_content)
+                            # 修正: コード管理番号の検出パターンを変更
+                            # 元のパターン: r'(?://|#|<!--|/\*) #(\d{5}(?:_[a-zA-Z0-9]+)?)'
+                            # 修正後のパターン: より柔軟にコード管理番号を検出
+                            code_numbers = re.findall(r'(?://|#|<!--|/\*)?\s*#?(\d{5}(?:_[a-zA-Z0-9]+)?)', file_content)
+                            # 純粋な数字のみのパターンを除外（誤検出防止）
+                            code_numbers = [num for num in code_numbers if not re.match(r'^\d+$', num)]
+                            
                             if not code_numbers:
                                 self.errors.append(f"ファイルID {file_id} のコード管理番号が見つかりません")
                             
@@ -74,14 +141,21 @@ class ProcedureValidator:
                         
                         elif action == "修正":
                             # 修正区間のチェック
-                            modification_sections = re.finditer(r'#### #(\d{5})-#(\d{5})\n```[a-z]*\n(.*?)```', file_content, re.DOTALL)
+                            # 修正: コード管理番号のパターンを変更
+                            modification_sections = re.finditer(r'####\s+#(\d+(?:_[a-zA-Z0-9]+)?)-#(\d+(?:_[a-zA-Z0-9]+)?)\s*\n```[a-z]*\n([\s\S]*?)```', file_content, re.DOTALL)
                             for mod_match in modification_sections:
                                 start_code = mod_match.group(1)
                                 end_code = mod_match.group(2)
                                 mod_content = mod_match.group(3)
                                 
+                                debug_logger.log(f"修正区間検出: #{start_code}-#{end_code}")
+                                
                                 # 修正区間内にコード管理番号があるかチェック（JSONファイル以外）
-                                section_code_numbers = re.findall(r'(?://|#|<!--|/\*) #(\d{5})', mod_content)
+                                # こちらも同様に検出パターンを修正
+                                section_code_numbers = re.findall(r'(?://|#|<!--|/\*)?\s*#?(\d{5}(?:_[a-zA-Z0-9]+)?)', mod_content)
+                                # 純粋な数字のみのパターンを除外
+                                section_code_numbers = [num for num in section_code_numbers if not re.match(r'^\d+$', num)]
+                                
                                 if not section_code_numbers:
                                     self.errors.append(f"ファイルID {file_id} の修正区間 #{start_code}-#{end_code} にコード管理番号が見つかりません")
                                 
@@ -91,6 +165,7 @@ class ProcedureValidator:
                                 if end_code not in section_code_numbers:
                                     self.errors.append(f"ファイルID {file_id} の修正区間 #{start_code}-#{end_code} に終了コード #{end_code} が含まれていません")
         
+        debug_logger.log(f"手順書検証完了。エラー数: {len(self.errors)}")
         return len(self.errors) == 0
     
     def _check_version(self):
@@ -129,15 +204,21 @@ class ProcedureParser:
         try:
             with open(self.procedure_file_path, 'r', encoding='utf-8') as f:
                 self.procedure_content = f.read()
+                debug_logger.log(f"手順書 {self.procedure_file_path} を読み込みました ({len(self.procedure_content)} バイト)")
+                # 手順書全体をログに保存
+                debug_logger.log_file_content("procedure_full_content.md", self.procedure_content)
         except Exception as e:
+            debug_logger.log(f"エラー: 手順書の読み込みに失敗しました: {e}")
             print(f"エラー: 手順書の読み込みに失敗しました: {e}")
             sys.exit(1)
         
         # バリデーション
         validator = ProcedureValidator(self.procedure_content)
         if not validator.validate():
+            debug_logger.log("手順書のフォーマットが不正です:")
             print("エラー: 手順書のフォーマットが不正です:")
             for error in validator.get_errors():
+                debug_logger.log(f"- {error}")
                 print(f"- {error}")
             sys.exit(1)
         
@@ -145,6 +226,7 @@ class ProcedureParser:
         self.version = validator.get_version()
         version_without_v = self.version[1:] if self.version and self.version.startswith('v') else ""
         if version_without_v != VERSION:
+            debug_logger.log(f"警告: スクリプトのバージョン({VERSION})と手順書の準拠形式バージョン({version_without_v})が一致しません")
             print(f"警告: スクリプトのバージョン({VERSION})と手順書の準拠形式バージョン({version_without_v})が一致しません")
             response = input("続行しますか？ (y/n): ")
             if response.lower() != 'y':
@@ -154,24 +236,29 @@ class ProcedureParser:
         title_match = re.search(r'# ([^\n]+)', self.procedure_content)
         if title_match:
             self.app_name = title_match.group(1)
+            debug_logger.log(f"アプリ名: {self.app_name}")
         
         # 概要の取得
         overview_match = re.search(r'## 概要\n(.*?)(?=##)', self.procedure_content, re.DOTALL)
         if overview_match:
             self.overview = overview_match.group(1).strip()
+            debug_logger.log(f"概要を取得しました ({len(self.overview)} 文字)")
         
         # アプリ実行コマンドの取得
         commands_match = re.search(r'## アプリ実行コマンド\n```bash\n(.*?)```', self.procedure_content, re.DOTALL)
         if commands_match:
             self.run_commands = commands_match.group(1).strip().split('\n')
+            debug_logger.log(f"実行コマンドを取得しました ({len(self.run_commands)} 行)")
         
         # 必要ファイル一覧の取得
         file_list_match = re.search(r'## 必要ファイル一覧\n(.*?)(?=##)', self.procedure_content, re.DOTALL)
         if file_list_match:
             file_list_content = file_list_match.group(1).strip()
             file_lines = [line.strip() for line in file_list_content.split('\n') if line.strip()]
+            debug_logger.log(f"ファイル一覧を取得しました ({len(file_lines)} ファイル)")
             
             for line in file_lines:
+                debug_logger.log(f"ファイル行: {line}")
                 parts = line.split(',', 2)
                 if len(parts) == 3:
                     action_type, file_id, file_path = parts
@@ -185,61 +272,117 @@ class ProcedureParser:
                         "id": file_id,
                         "path": file_path.strip()
                     })
+                    debug_logger.log(f"ファイル一覧に追加: {action_type}({action}), {file_id}, {file_path}")
         
         # ファイルの中身とコミットメッセージの取得
-        file_section_pattern = r'### (新規|修正|削除),(\d{5}),([^\n]+)\n(コミット内容：([^\n]+)\n)?'
+        file_section_pattern = r'### (新規|修正|削除),(\d{5}),([^\n]+)(?:\nコミット内容：([^\n]+))?'
         file_sections = re.finditer(file_section_pattern, self.procedure_content)
         
         for match in file_sections:
             action = match.group(1)
             file_id = match.group(2)
             file_path = match.group(3)
-            commit_msg = match.group(5) if match.group(5) else f"{action} {file_path}"
+            commit_msg = match.group(4) if match.group(4) else f"{action} {file_path}"
             
-            # ファイルの内容を取得
-            file_end_pattern = r'### (新規|修正|削除),\d{5},[^\n]+(?:\nコミット内容：[^\n]+)?\n(.*?)(?=### |\Z)'
-            file_content_match = re.search(file_end_pattern, self.procedure_content[match.start():], re.DOTALL)
+            debug_logger.log(f"ファイルセクション処理: {action}, {file_id}, {file_path}")
+            debug_logger.log(f"コミットメッセージ: {commit_msg}")
             
-            if file_content_match:
-                file_content = file_content_match.group(2).strip()
-                key = f"{file_id},{file_path}"
+            # 現在のセクションの開始位置を取得
+            section_start = match.start()
+            
+            # 次のセクションの開始位置を探す
+            next_section_match = re.search(r'### (新規|修正|削除),\d{5},', self.procedure_content[section_start + 1:])
+            if next_section_match:
+                section_end = section_start + 1 + next_section_match.start()
+            else:
+                # 次のセクションがなければ、備考セクションの開始位置を探す
+                notes_match = re.search(r'## 備考', self.procedure_content[section_start:])
+                if notes_match:
+                    section_end = section_start + notes_match.start()
+                else:
+                    # 備考セクションもなければ、ファイルの終わりまで
+                    section_end = len(self.procedure_content)
+            
+            # セクションの内容を取得
+            section_content = self.procedure_content[section_start:section_end].strip()
+            debug_logger.log(f"セクション内容の長さ: {len(section_content)}")
+            
+            key = f"{file_id},{file_path}"
+            
+            if action == "新規":
+                # 新規ファイルの場合、コードブロックの内容を抽出
+                code_block_match = re.search(r'```[a-z]*\n(.*?)```', section_content, re.DOTALL)
+                if code_block_match:
+                    self.file_contents[key] = code_block_match.group(1)
+                    debug_logger.log(f"新規ファイル {file_path} の内容を抽出しました ({len(self.file_contents[key])} バイト)")
+            
+            elif action == "修正":
+                # 修正ファイルの場合、修正区間を抽出
+                self.file_modifications[key] = []
                 
-                if action == "新規":
-                    # 新規ファイルの場合、コードブロックの内容を抽出
-                    code_block_match = re.search(r'```[a-z]*\n(.*?)```', file_content, re.DOTALL)
-                    if code_block_match:
-                        self.file_contents[key] = code_block_match.group(1)
+                # デバッグ出力
+                debug_logger.log(f"修正ファイル {file_path} の処理を開始")
+                print(f"修正ファイル {file_path} の処理を開始")
                 
-                elif action == "修正":
-                    # 修正ファイルの場合、修正区間を抽出
-                    self.file_modifications[key] = []
+                # 修正区間を検索
+                modification_pattern = r'####\s+#(\d+(?:_[a-zA-Z0-9]+)?)-#(\d+(?:_[a-zA-Z0-9]+)?)\s*\n```[a-z]*\n([\s\S]*?)```'
+                modification_sections = list(re.finditer(modification_pattern, section_content, re.DOTALL))
+
+                debug_logger.log(f"修正区間検索パターン: {modification_pattern}")
+                debug_logger.log(f"修正区間数: {len(modification_sections)}")
+
+                # セクションの内容をデバッグログに出力
+                debug_logger.log_file_content(f"{file_id}_{file_path}_section_content.txt", section_content)
+
+                if len(modification_sections) == 0:
+                    debug_logger.log("修正区間が見つかりません。代替パターンを試します。")
+                    alt_pattern = r'####.*?#(\d+(?:_[a-zA-Z0-9]+)?)-#(\d+(?:_[a-zA-Z0-9]+)?).*?\n```.*?\n([\s\S]*?)```'
+                    debug_logger.log(f"代替パターン: {alt_pattern}")
+                    modification_sections = list(re.finditer(alt_pattern, section_content, re.DOTALL))
+                    debug_logger.log(f"代替パターンによる修正区間数: {len(modification_sections)}")
+                
+                for mod_match in modification_sections:
+                    start_code = mod_match.group(1)
+                    end_code = mod_match.group(2)
+                    mod_content = mod_match.group(3)
                     
-                    modification_sections = re.finditer(r'#### #(\d{5})-#(\d{5})\n```[a-z]*\n(.*?)```', file_content, re.DOTALL)
-                    for mod_match in modification_sections:
-                        start_code = mod_match.group(1)
-                        end_code = mod_match.group(2)
-                        mod_content = mod_match.group(3)
-                        
-                        self.file_modifications[key].append({
-                            "start": start_code,
-                            "end": end_code,
-                            "content": mod_content
-                        })
+                    # 修正内容をデバッグ出力
+                    debug_logger.log(f"修正区間 #{start_code}-#{end_code} を抽出しました")
+                    debug_logger.log_file_content(f"{file_id}_{file_path}_mod_{start_code}_{end_code}.txt", mod_content)
+                    
+                    preview = mod_content[:50] + ("..." if len(mod_content) > 50 else "")
+                    debug_logger.log(f"修正内容の先頭部分: {preview}")
+                    print(f"修正区間 #{start_code}-#{end_code} を抽出しました")
+                    print(f"修正内容の先頭部分: {preview}")
+                    
+                    self.file_modifications[key].append({
+                        "start": start_code,
+                        "end": end_code,
+                        "content": mod_content
+                    })
                 
-                # コミットメッセージを保存
-                self.commit_messages[key] = commit_msg
+                if len(self.file_modifications[key]) == 0:
+                    debug_logger.log(f"警告: ファイル {file_path} に修正区間が見つかりませんでした")
+                    print(f"警告: ファイル {file_path} に修正区間が見つかりませんでした")
+            
+            # コミットメッセージを保存
+            self.commit_messages[key] = commit_msg
         
         # 備考の取得
         notes_match = re.search(r'## 備考\n(.*?)(?=$)', self.procedure_content, re.DOTALL)
         if notes_match:
             self.notes = notes_match.group(1).strip()
+            debug_logger.log(f"備考を取得しました ({len(self.notes)} 文字)")
         
         return self
     
     def create_project_structure(self, base_dir):
         """解析した手順書に基づいてプロジェクト構造を作成する"""
+        debug_logger.log(f"プロジェクト構造の作成を開始: {base_dir}")
+        
         if not os.path.exists(base_dir):
             os.makedirs(base_dir)
+            debug_logger.log(f"ディレクトリ作成: {base_dir}")
             print(f"ディレクトリ作成: {base_dir}")
         
         # ファイル操作
@@ -251,9 +394,12 @@ class ProcedureParser:
                 full_path = os.path.join(base_dir, file_path)
                 dir_path = os.path.dirname(full_path)
                 
+                debug_logger.log(f"ファイル処理: {action}, {file_id}, {file_path}")
+                
                 # ディレクトリがなければ作成
                 if dir_path and not os.path.exists(dir_path):
                     os.makedirs(dir_path)
+                    debug_logger.log(f"ディレクトリ作成: {dir_path}")
                     print(f"ディレクトリ作成: {dir_path}")
                 
                 key = f"{file_id},{file_path}"
@@ -262,8 +408,10 @@ class ProcedureParser:
                     # ファイル削除
                     if os.path.exists(full_path):
                         os.remove(full_path)
+                        debug_logger.log(f"ファイル削除: {full_path}")
                         print(f"ファイル削除: {full_path}")
                     else:
+                        debug_logger.log(f"警告: 削除対象ファイル {full_path} が見つかりません")
                         print(f"警告: 削除対象ファイル {full_path} が見つかりません")
                 
                 elif action == "new":
@@ -271,8 +419,10 @@ class ProcedureParser:
                     if key in self.file_contents:
                         with open(full_path, 'w', encoding='utf-8') as f:
                             f.write(self.file_contents[key])
+                        debug_logger.log(f"ファイル作成: {full_path}")
                         print(f"ファイル作成: {full_path}")
                     else:
+                        debug_logger.log(f"警告: ファイル {file_path} の内容が見つかりません")
                         print(f"警告: ファイル {file_path} の内容が見つかりません")
                 
                 elif action == "modify":
@@ -283,11 +433,14 @@ class ProcedureParser:
                             self._modify_json_file(full_path, self.file_modifications[key])
                         else:
                             self._modify_file(full_path, self.file_modifications[key])
+                        debug_logger.log(f"ファイル更新: {full_path}")
                         print(f"ファイル更新: {full_path}")
                     else:
+                        debug_logger.log(f"警告: ファイル {file_path} の修正情報が見つからないか、ファイルが存在しません")
                         print(f"警告: ファイル {file_path} の修正情報が見つからないか、ファイルが存在しません")
             
             except Exception as e:
+                debug_logger.log(f"エラー: ファイル {file_path} の処理に失敗しました: {e}")
                 print(f"エラー: ファイル {file_path} の処理に失敗しました: {e}")
         
         # 実行コマンドをbat/shファイルとして保存
@@ -298,6 +451,7 @@ class ProcedureParser:
                     f.write("@echo off\n")
                     for cmd in self.run_commands:
                         f.write(f"{cmd}\n")
+                debug_logger.log(f"実行スクリプト作成: {script_path}")
                 print(f"実行スクリプト作成: {script_path}")
             else:  # Unix/Linux/Mac
                 script_path = os.path.join(base_dir, "run.sh")
@@ -306,24 +460,32 @@ class ProcedureParser:
                     for cmd in self.run_commands:
                         f.write(f"{cmd}\n")
                 os.chmod(script_path, 0o755)  # 実行権限を付与
+                debug_logger.log(f"実行スクリプト作成: {script_path}")
                 print(f"実行スクリプト作成: {script_path}")
     
     def _modify_json_file(self, file_path, modifications):
         """JSONファイルの修正を行う（コード管理番号を使用しない）"""
         try:
             import json
+            debug_logger.log(f"JSONファイル修正: {file_path}")
+            
             # ファイル内容の読み込み
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
+                debug_logger.log(f"JSONファイル内容を読み込みました ({len(content)} バイト)")
+                debug_logger.log_file_content(f"{file_path}_original.json", content)
             
             # バックアップの作成
             backup_path = file_path + ".bak"
             shutil.copy2(file_path, backup_path)
+            debug_logger.log(f"バックアップを作成しました: {backup_path}")
             
             # JSONファイルの場合は、修正内容そのものをファイルに書き込む
             # 最初の修正区間の内容を使用（通常、JSONファイルでは修正区間は1つのみ）
             if modifications and len(modifications) > 0:
                 new_content = modifications[0]["content"]
+                debug_logger.log(f"JSONファイルの新しい内容 ({len(new_content)} バイト)")
+                debug_logger.log_file_content(f"{file_path}_new.json", new_content)
                 
                 # 内容を整形して書き込む
                 try:
@@ -333,110 +495,170 @@ class ProcedureParser:
                     
                     with open(file_path, 'w', encoding='utf-8') as f:
                         f.write(formatted_json)
-                except json.JSONDecodeError:
+                    debug_logger.log(f"JSONファイルを更新しました (整形済み)")
+                except json.JSONDecodeError as json_err:
+                    debug_logger.log(f"JSON解析エラー: {json_err}")
                     # JSON解析エラーの場合は元の内容をそのまま書き込む
                     with open(file_path, 'w', encoding='utf-8') as f:
                         f.write(new_content)
+                    debug_logger.log(f"JSONファイルを更新しました (非整形)")
             
             # バックアップを削除
             os.remove(backup_path)
+            debug_logger.log(f"バックアップを削除しました: {backup_path}")
             
         except Exception as e:
+            debug_logger.log(f"JSONファイル修正中にエラーが発生しました: {e}")
             # エラーが発生した場合はバックアップから復元
             if os.path.exists(backup_path):
                 shutil.copy2(backup_path, file_path)
                 os.remove(backup_path)
+                debug_logger.log(f"バックアップから復元しました: {backup_path}")
             print(f"JSONファイル修正中にエラーが発生しました: {e}")
             raise e
     
     def _modify_file(self, file_path, modifications):
         """ファイルの特定範囲を修正する"""
         try:
+            debug_logger.log(f"ファイル修正: {file_path}")
+            
             # ファイル内容の読み込み
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
+                original_content = content  # バックアップ用
+                debug_logger.log(f"ファイル内容を読み込みました ({len(content)} バイト)")
+                debug_logger.log_file_content(f"{file_path}_original.txt", content)
+            
+            print(f"ファイル {file_path} の内容を読み込みました（{len(content)}バイト）")
             
             # バックアップの作成
             backup_path = file_path + ".bak"
             shutil.copy2(file_path, backup_path)
+            debug_logger.log(f"バックアップを作成しました: {backup_path}")
             
-            # 各修正区間を処理（順序に依存する可能性があるため、変更位置が大きい順に処理）
-            mods_sorted = sorted(modifications, key=lambda m: int(m["start"]), reverse=True)
+            # 変更フラグ
+            changed = False
             
-            for mod in mods_sorted:
+            # 各修正区間を処理
+            for mod in modifications:
                 start_code = mod["start"]
                 end_code = mod["end"]
                 new_content = mod["content"]
                 
-                # コード管理番号のパターン（コメント記号とスペース、インデントなどを考慮）
-                code_pattern = r'([^\n]*?)(?://|#|<!--|/\*)[^\n]*?#(%s)\b'
+                debug_logger.log(f"修正処理: コード管理番号 #{start_code}-#{end_code}")
+                print(f"修正処理: コード管理番号 #{start_code}-#{end_code}")
                 
-                # 開始コードと終了コードの位置を検索
-                start_match = re.search(code_pattern % re.escape(start_code), content)
-                end_match = re.search(code_pattern % re.escape(end_code), content)
+                # コード管理番号を直接検索 (# を含む形で)
+                start_marker = f"#{start_code}"
+                end_marker = f"#{end_code}"
                 
-                if start_match and end_match:
-                    # 行の先頭のインデントを取得
-                    start_indent = start_match.group(1)
-                    
-                    # 開始コードの行の開始位置を取得
-                    start_line_start = content.rfind('\n', 0, start_match.start()) + 1
-                    if start_line_start <= 0:
-                        start_line_start = 0
-                    
-                    # 終了コードの行の終了位置を取得
-                    end_line_end = content.find('\n', end_match.end())
-                    if end_line_end == -1:
-                        end_line_end = len(content)
-                    
-                    # 次のコード管理番号の位置を取得
-                    next_code_match = re.search(r'(?://|#|<!--|/\*)[^\n]*#\d{5}\b', content[end_line_end:])
-                    next_code_pos = end_line_end + next_code_match.start() if next_code_match else len(content)
-                    
-                    # 各行にインデントを適用
-                    indented_content = ""
-                    for line in new_content.split('\n'):
-                        # 既にインデントがある行はそのまま
-                        if not line.strip() or line.lstrip() != line:
-                            indented_content += line + '\n'
-                        else:
-                            # インデントがない行にはインデントを追加
-                            indented_content += start_indent + line + '\n'
-                    
-                    # 最後の改行を削除
-                    if indented_content.endswith('\n'):
-                        indented_content = indented_content[:-1]
-                    
-                    # 内容を置き換え
-                    content = content[:start_line_start] + indented_content + content[next_code_pos:]
-                else:
-                    print(f"警告: コード管理番号 #{start_code} や #{end_code} がファイル {file_path} 内で見つかりません")
+                # 開始マーカーの検索
+                start_pos = content.find(start_marker)
+                if start_pos == -1:
+                    debug_logger.log(f"開始マーカー '{start_marker}' が見つかりません。この修正はスキップします。")
+                    print(f"開始マーカー '{start_marker}' が見つかりません。この修正はスキップします。")
+                    continue
+                
+                debug_logger.log(f"開始マーカー '{start_marker}' を位置 {start_pos} で見つけました")
+                print(f"開始マーカー '{start_marker}' を位置 {start_pos} で見つけました")
+                
+                # 終了マーカーの検索 (開始位置以降を検索)
+                end_pos = content.find(end_marker, start_pos + len(start_marker))
+                if end_pos == -1:
+                    debug_logger.log(f"終了マーカー '{end_marker}' が見つかりません。この修正はスキップします。")
+                    print(f"終了マーカー '{end_marker}' が見つかりません。この修正はスキップします。")
+                    continue
+                
+                debug_logger.log(f"終了マーカー '{end_marker}' を位置 {end_pos} で見つけました")
+                print(f"終了マーカー '{end_marker}' を位置 {end_pos} で見つけました")
+                
+                # 終了マーカーのサイズを加える
+                end_pos += len(end_marker)
+                
+                # この範囲を新しい内容で置き換え
+                before = content[start_pos:end_pos]
+                debug_logger.log(f"置換前の内容: {before[:200]}...")
+                debug_logger.log_file_content(f"{file_path}_replace_before.txt", before)
+                print(f"置換前の内容: {before[:100]}...")
+                
+                # 新しい内容を出力
+                preview = new_content[:100] + ("..." if len(new_content) > 100 else "")
+                debug_logger.log(f"新しい内容: {preview}")
+                debug_logger.log_file_content(f"{file_path}_replace_after.txt", new_content)
+                print(f"新しい内容: {preview}")
+                
+                # 置換を実行
+                content = content[:start_pos] + new_content + content[end_pos:]
+                changed = True
+                
+                debug_logger.log(f"置換が完了しました")
+                print(f"置換が完了しました")
             
-            # 修正内容をファイルに書き込む
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(content)
+            # 変更があった場合のみファイルを書き込む
+            if changed:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                debug_logger.log(f"ファイル {file_path} を更新しました")
+                debug_logger.log_file_content(f"{file_path}_updated.txt", content)
+                print(f"ファイル {file_path} を更新しました")
+            else:
+                debug_logger.log(f"警告: ファイル {file_path} に変更はありませんでした")
+                print(f"警告: ファイル {file_path} に変更はありませんでした")
             
             # バックアップを削除
             os.remove(backup_path)
+            debug_logger.log(f"バックアップを削除しました: {backup_path}")
             
         except Exception as e:
+            debug_logger.log(f"エラー: ファイル修正中にエラーが発生しました: {e}")
             # エラーが発生した場合はバックアップから復元
             if os.path.exists(backup_path):
                 shutil.copy2(backup_path, file_path)
                 os.remove(backup_path)
-            print(f"ファイル修正中にエラーが発生しました: {e}")
+                debug_logger.log(f"バックアップから復元しました: {backup_path}")
+            print(f"エラー: ファイル修正中にエラーが発生しました: {e}")
+            import traceback
+            traceback.print_exc()
             raise e
-    
+        
+    def _apply_indentation(self, content, base_indent):
+        """コンテンツに基本インデントを適用する"""
+        debug_logger.log(f"インデント適用: base_indent='{base_indent}'")
+        lines = content.split('\n')
+        indented_lines = []
+        
+        for line in lines:
+            if not line.strip():
+                # 空行はそのまま
+                indented_lines.append(line)
+            elif line.lstrip() != line:
+                # 既にインデントがある行は、相対的なインデント構造を維持
+                # ただし、行の先頭のインデントを基本インデントに置き換える
+                content_part = line.lstrip()
+                indented_lines.append(base_indent + content_part)
+            else:
+                # インデントがない行には基本インデントを追加
+                indented_lines.append(base_indent + line)
+        
+        return '\n'.join(indented_lines)
+        
     def perform_git_operations(self, base_dir):
         """Git操作を実行する"""
+        debug_logger.log(f"Git操作を開始: {base_dir}")
         try:
             # カレントディレクトリを変更
             original_dir = os.getcwd()
             os.chdir(base_dir)
+            debug_logger.log(f"カレントディレクトリを変更: {base_dir}")
             
             # git add
             subprocess.run(["git", "add", "."], check=True)
+            debug_logger.log("Git: ファイルを追加しました")
             print("Git: ファイルを追加しました")
+            
+            # git status を実行して変更を確認
+            status_output = subprocess.run(["git", "status", "--porcelain"], check=True, capture_output=True, text=True).stdout
+            debug_logger.log(f"Git status 出力:\n{status_output}")
             
             # コミットメッセージを決定
             # 最初のファイルのコミットメッセージを使用
@@ -447,23 +669,43 @@ class ProcedureParser:
                 key = f"{file_id},{file_path}"
                 
                 commit_message = self.commit_messages.get(key, f"{self.app_name} の更新")
+                debug_logger.log(f"コミットメッセージ: {commit_message}")
                 
                 # git commit
-                subprocess.run(["git", "commit", "-m", commit_message], check=True)
-                print(f"Git: コミット完了 - {commit_message}")
+                try:
+                    # 変更があるかチェック
+                    if status_output.strip():
+                        # 変更がある場合のみコミット
+                        commit_result = subprocess.run(["git", "commit", "-m", commit_message], check=True, capture_output=True, text=True)
+                        debug_logger.log(f"Git commit 出力:\n{commit_result.stdout}")
+                        debug_logger.log(f"Git: コミット完了 - {commit_message}")
+                        print(f"Git: コミット完了 - {commit_message}")
+                    else:
+                        debug_logger.log("Git: 変更がないため、コミットはスキップされました")
+                        print("Git: 変更がないため、コミットはスキップされました")
+                except subprocess.CalledProcessError as e:
+                    debug_logger.log(f"Git: コミット中にエラーが発生しました: {e}")
+                    debug_logger.log(f"エラー出力: {e.stderr}")
+                    print(f"Git: コミット中にエラーが発生しました: {e}")
             else:
+                debug_logger.log("警告: コミットするファイルがありません")
                 print("警告: コミットするファイルがありません")
             
             # カレントディレクトリを戻す
             os.chdir(original_dir)
+            debug_logger.log(f"カレントディレクトリを元に戻しました: {original_dir}")
             
         except subprocess.CalledProcessError as e:
+            debug_logger.log(f"Git操作中にエラーが発生しました: {e}")
+            debug_logger.log(f"エラー出力: {e.stderr if hasattr(e, 'stderr') else 'なし'}")
             print(f"Git操作中にエラーが発生しました: {e}")
         except Exception as e:
+            debug_logger.log(f"エラー: {e}")
             print(f"エラー: {e}")
     
     def generate_summary(self):
         """解析した内容のサマリーを表示する"""
+        debug_logger.log("サマリーの生成を開始")
         print("\n===== 手順書解析サマリー =====")
         print(f"アプリ名: {self.app_name}")
         print(f"準拠形式バージョン: {self.version}")
@@ -475,13 +717,16 @@ class ProcedureParser:
         for cmd in self.run_commands:
             print(f"  {cmd}")
         print("========================\n")
+        debug_logger.log("サマリーの生成が完了しました")
 
 
 def save_procedure_copy(procedure_content, howto_dir):
     """手順書をHowToBookフォルダに保存する"""
+    debug_logger.log(f"手順書のコピーを保存: {howto_dir}")
     try:
         if not os.path.exists(howto_dir):
             os.makedirs(howto_dir)
+            debug_logger.log(f"HowToBookディレクトリを作成しました: {howto_dir}")
             print(f"HowToBookディレクトリを作成しました: {howto_dir}")
         
         # 最新の番号を取得
@@ -501,29 +746,43 @@ def save_procedure_copy(procedure_content, howto_dir):
         with open(os.path.join(howto_dir, new_filename), 'w', encoding='utf-8') as f:
             f.write(procedure_content)
         
+        debug_logger.log(f"手順書を保存しました: {new_filename}")
         print(f"手順書を保存しました: {new_filename}")
         return new_filename
     
     except Exception as e:
+        debug_logger.log(f"手順書の保存に失敗しました: {e}")
         print(f"手順書の保存に失敗しました: {e}")
         return None
 
 
 def main():
-    if len(sys.argv) < 3:
-        print(f"使用方法: python procedure_parser.py <手順書ファイルパス> <出力ディレクトリ>")
-        print(f"バージョン: {VERSION}")
-        sys.exit(1)
+    # コマンドライン引数のパース
+    parser = argparse.ArgumentParser(description='手順書パーサー')
+    parser.add_argument('procedure_file', help='手順書ファイルのパス')
+    parser.add_argument('output_dir', help='出力ディレクトリ')
+    parser.add_argument('--debug', action='store_true', help='デバッグモードを有効にする')
+    args = parser.parse_args()
     
-    procedure_file = sys.argv[1]
-    output_dir = sys.argv[2]
+    # デバッグモードの設定
+    global debug_logger
+    if args.debug:
+        debug_logger = DebugLogger(enabled=True)
+        debug_logger.log("デバッグモードが有効になりました")
+    
+    procedure_file = args.procedure_file
+    output_dir = args.output_dir
+    
+    debug_logger.log(f"手順書ファイル: {procedure_file}")
+    debug_logger.log(f"出力ディレクトリ: {output_dir}")
     
     # HowToBookディレクトリのパス
     howto_dir = os.path.join(os.path.dirname(output_dir), "HowToBook")
+    debug_logger.log(f"HowToBookディレクトリ: {howto_dir}")
     
     # パーサーの初期化と実行
-    parser = ProcedureParser(procedure_file)
-    parser.parse()
+    procedure_parser = ProcedureParser(procedure_file)
+    procedure_parser.parse()
     
     # 手順書コピーの保存
     with open(procedure_file, 'r', encoding='utf-8') as f:
@@ -532,16 +791,20 @@ def main():
     save_procedure_copy(procedure_content, howto_dir)
     
     # サマリー表示
-    parser.generate_summary()
+    procedure_parser.generate_summary()
     
     # プロジェクト構造の作成
-    parser.create_project_structure(output_dir)
+    procedure_parser.create_project_structure(output_dir)
     
     # Git操作の実行
-    parser.perform_git_operations(output_dir)
+    procedure_parser.perform_git_operations(output_dir)
     
     print(f"\n環境構築が完了しました。出力先: {output_dir}")
     print("実行コマンドを実行するには、生成された実行スクリプトを使用してください。")
+    
+    # デバッグログを閉じる
+    debug_logger.close()
+
 
 if __name__ == "__main__":
     main()
