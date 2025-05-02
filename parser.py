@@ -9,7 +9,15 @@ from pathlib import Path
 import binascii  # デバッグ出力用に追加
 
 # スクリプトのバージョン
-VERSION = "2.0.0"
+VERSION = "2.1.0"
+
+# 処理から除外するファイル拡張子
+EXCLUDED_EXTENSIONS = ['.json', '.env', '.lock', '.md', '.gitignore', '.gitkeep', '.git', '.DS_Store']
+
+def is_excluded_file(file_path):
+    """ファイルが処理から除外されるかどうかを判定する"""
+    _, ext = os.path.splitext(file_path.lower())
+    return ext in EXCLUDED_EXTENSIONS
 
 # デバッグ用のログ記録
 class DebugLogger:
@@ -108,11 +116,8 @@ class ProcedureValidator:
                 self.errors.append(f"ファイルID {file_id} が重複しています")
             file_ids.add(file_id)
             
-            # 新規・修正の場合はコード管理番号をチェック（JSONファイル以外）
-            if action in ["新規", "修正"]:
-                # JSONファイルかどうかのチェック
-                is_json_file = file_path.lower().endswith('.json')
-                
+            # 新規・修正の場合はコード管理番号をチェック（除外ファイル以外）
+            if action in ["新規", "修正"] and not is_excluded_file(file_path):
                 # ファイルセクションの内容を取得
                 file_end_pattern = r'### (新規|修正|削除),\d{5},[^\n]+(?:\nコミット内容：[^\n]+)?\n([\s\S]*?)(?=### |\Z)'
                 file_content_match = re.search(file_end_pattern, self.content[match.start():], re.DOTALL)
@@ -120,50 +125,45 @@ class ProcedureValidator:
                 if file_content_match:
                     file_content = file_content_match.group(2)
                     
-                    # JSONファイル以外の場合のみコード管理番号をチェック
-                    if not is_json_file:
-                        if action == "新規":
-                            # 新規ファイルの場合
-                            # 修正: コード管理番号の検出パターンを変更
-                            # 元のパターン: r'(?://|#|<!--|/\*) #(\d{5}(?:_[a-zA-Z0-9]+)?)'
-                            # 修正後のパターン: より柔軟にコード管理番号を検出
-                            code_numbers = re.findall(r'(?://|#|<!--|/\*)?\s*#?(\d{5}(?:_[a-zA-Z0-9]+)?)', file_content)
-                            # 純粋な数字のみのパターンを除外（誤検出防止）
-                            code_numbers = [num for num in code_numbers if not re.match(r'^\d+$', num)]
-                            
-                            if not code_numbers:
-                                self.errors.append(f"ファイルID {file_id} のコード管理番号が見つかりません")
-                            
-                            # 連番かつ一意のチェック
-                            unique_numbers = set(code_numbers)
-                            if len(code_numbers) != len(unique_numbers):
-                                self.errors.append(f"ファイルID {file_id} のコード管理番号に重複があります")
+                    if action == "新規":
+                        # 新規ファイルの場合
+                        # v2.1.0形式のコード管理番号パターン
+                        code_numbers = re.findall(r'(?://|#|<!--|/\*)?\s*#(\d{5}_[a-z]{5})', file_content)
                         
-                        elif action == "修正":
-                            # 修正区間のチェック
-                            # 修正: コード管理番号のパターンを変更
-                            modification_sections = re.finditer(r'####\s+#(\d+(?:_[a-zA-Z0-9]+)?)-#(\d+(?:_[a-zA-Z0-9]+)?)\s*\n```[a-z]*\n([\s\S]*?)```', file_content, re.DOTALL)
-                            for mod_match in modification_sections:
-                                start_code = mod_match.group(1)
-                                end_code = mod_match.group(2)
-                                mod_content = mod_match.group(3)
-                                
-                                debug_logger.log(f"修正区間検出: #{start_code}-#{end_code}")
-                                
-                                # 修正区間内にコード管理番号があるかチェック（JSONファイル以外）
-                                # こちらも同様に検出パターンを修正
-                                section_code_numbers = re.findall(r'(?://|#|<!--|/\*)?\s*#?(\d{5}(?:_[a-zA-Z0-9]+)?)', mod_content)
-                                # 純粋な数字のみのパターンを除外
-                                section_code_numbers = [num for num in section_code_numbers if not re.match(r'^\d+$', num)]
-                                
-                                if not section_code_numbers:
-                                    self.errors.append(f"ファイルID {file_id} の修正区間 #{start_code}-#{end_code} にコード管理番号が見つかりません")
-                                
-                                # 修正区間の開始と終了コードが含まれているかチェック（JSONファイル以外）
-                                if start_code not in section_code_numbers:
-                                    self.errors.append(f"ファイルID {file_id} の修正区間 #{start_code}-#{end_code} に開始コード #{start_code} が含まれていません")
-                                if end_code not in section_code_numbers:
-                                    self.errors.append(f"ファイルID {file_id} の修正区間 #{start_code}-#{end_code} に終了コード #{end_code} が含まれていません")
+                        if not code_numbers:
+                            self.errors.append(f"ファイルID {file_id} のコード管理番号が見つかりません")
+                        
+                        # 終点マーカーの確認
+                        if '99999_zzzzz' not in ''.join(code_numbers):
+                            self.errors.append(f"ファイルID {file_id} に終点マーカー #99999_zzzzz が見つかりません")
+                        
+                        # 連番かつ一意のチェック
+                        unique_numbers = set(code_numbers)
+                        if len(code_numbers) != len(unique_numbers):
+                            self.errors.append(f"ファイルID {file_id} のコード管理番号に重複があります")
+                    
+                    elif action == "修正":
+                        # 修正区間のチェック
+                        # v2.1.0形式のコード管理番号パターン
+                        modification_sections = re.finditer(r'####\s+#(\d{5}_[a-z]{5})-#(\d{5}_[a-z]{5})\s*\n```[a-z]*\n([\s\S]*?)```', file_content, re.DOTALL)
+                        for mod_match in modification_sections:
+                            start_code = mod_match.group(1)
+                            end_code = mod_match.group(2)
+                            mod_content = mod_match.group(3)
+                            
+                            debug_logger.log(f"修正区間検出: #{start_code}-#{end_code}")
+                            
+                            # 修正区間内にコード管理番号があるかチェック
+                            section_code_numbers = re.findall(r'(?://|#|<!--|/\*)?\s*#(\d{5}_[a-z]{5})', mod_content)
+                            
+                            if not section_code_numbers:
+                                self.errors.append(f"ファイルID {file_id} の修正区間 #{start_code}-#{end_code} にコード管理番号が見つかりません")
+                            
+                            # 修正区間の開始と終了コードが含まれているかチェック
+                            if start_code not in section_code_numbers:
+                                self.errors.append(f"ファイルID {file_id} の修正区間 #{start_code}-#{end_code} に開始コード #{start_code} が含まれていません")
+                            if end_code not in section_code_numbers:
+                                self.errors.append(f"ファイルID {file_id} の修正区間 #{start_code}-#{end_code} に終了コード #{end_code} が含まれていません")
         
         debug_logger.log(f"手順書検証完了。エラー数: {len(self.errors)}")
         return len(self.errors) == 0
@@ -380,6 +380,10 @@ class ProcedureParser:
         """解析した手順書に基づいてプロジェクト構造を作成する"""
         debug_logger.log(f"プロジェクト構造の作成を開始: {base_dir}")
         
+        # 除外ファイル拡張子のリストを表示
+        print(f"注意: 以下の拡張子のファイルは自動処理から除外されます: {', '.join(EXCLUDED_EXTENSIONS)}")
+        print("これらのファイルは手動で作成または修正してください。")
+        
         if not os.path.exists(base_dir):
             os.makedirs(base_dir)
             debug_logger.log(f"ディレクトリ作成: {base_dir}")
@@ -395,6 +399,12 @@ class ProcedureParser:
                 dir_path = os.path.dirname(full_path)
                 
                 debug_logger.log(f"ファイル処理: {action}, {file_id}, {file_path}")
+                
+                # 除外ファイルチェック
+                if is_excluded_file(file_path):
+                    print(f"注意: {file_path} は除外リストに含まれるため、自動処理されません。手動で{action}してください。")
+                    debug_logger.log(f"除外ファイル: {file_path}は処理がスキップされます")
+                    continue
                 
                 # ディレクトリがなければ作成
                 if dir_path and not os.path.exists(dir_path):
@@ -428,11 +438,7 @@ class ProcedureParser:
                 elif action == "modify":
                     # ファイル修正
                     if key in self.file_modifications and os.path.exists(full_path):
-                        # JSONファイルの場合は特別な処理
-                        if file_path.lower().endswith('.json'):
-                            self._modify_json_file(full_path, self.file_modifications[key])
-                        else:
-                            self._modify_file(full_path, self.file_modifications[key])
+                        self._modify_file(full_path, self.file_modifications[key])
                         debug_logger.log(f"ファイル更新: {full_path}")
                         print(f"ファイル更新: {full_path}")
                     else:
@@ -463,64 +469,16 @@ class ProcedureParser:
                 debug_logger.log(f"実行スクリプト作成: {script_path}")
                 print(f"実行スクリプト作成: {script_path}")
     
-    def _modify_json_file(self, file_path, modifications):
-        """JSONファイルの修正を行う（コード管理番号を使用しない）"""
-        try:
-            import json
-            debug_logger.log(f"JSONファイル修正: {file_path}")
-            
-            # ファイル内容の読み込み
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-                debug_logger.log(f"JSONファイル内容を読み込みました ({len(content)} バイト)")
-                debug_logger.log_file_content(f"{file_path}_original.json", content)
-            
-            # バックアップの作成
-            backup_path = file_path + ".bak"
-            shutil.copy2(file_path, backup_path)
-            debug_logger.log(f"バックアップを作成しました: {backup_path}")
-            
-            # JSONファイルの場合は、修正内容そのものをファイルに書き込む
-            # 最初の修正区間の内容を使用（通常、JSONファイルでは修正区間は1つのみ）
-            if modifications and len(modifications) > 0:
-                new_content = modifications[0]["content"]
-                debug_logger.log(f"JSONファイルの新しい内容 ({len(new_content)} バイト)")
-                debug_logger.log_file_content(f"{file_path}_new.json", new_content)
-                
-                # 内容を整形して書き込む
-                try:
-                    # JSONとして解析してフォーマット
-                    parsed_json = json.loads(new_content)
-                    formatted_json = json.dumps(parsed_json, indent=2, ensure_ascii=False)
-                    
-                    with open(file_path, 'w', encoding='utf-8') as f:
-                        f.write(formatted_json)
-                    debug_logger.log(f"JSONファイルを更新しました (整形済み)")
-                except json.JSONDecodeError as json_err:
-                    debug_logger.log(f"JSON解析エラー: {json_err}")
-                    # JSON解析エラーの場合は元の内容をそのまま書き込む
-                    with open(file_path, 'w', encoding='utf-8') as f:
-                        f.write(new_content)
-                    debug_logger.log(f"JSONファイルを更新しました (非整形)")
-            
-            # バックアップを削除
-            os.remove(backup_path)
-            debug_logger.log(f"バックアップを削除しました: {backup_path}")
-            
-        except Exception as e:
-            debug_logger.log(f"JSONファイル修正中にエラーが発生しました: {e}")
-            # エラーが発生した場合はバックアップから復元
-            if os.path.exists(backup_path):
-                shutil.copy2(backup_path, file_path)
-                os.remove(backup_path)
-                debug_logger.log(f"バックアップから復元しました: {backup_path}")
-            print(f"JSONファイル修正中にエラーが発生しました: {e}")
-            raise e
-    
     def _modify_file(self, file_path, modifications):
         """ファイルの特定範囲を修正する"""
         try:
             debug_logger.log(f"ファイル修正: {file_path}")
+            
+            # 除外ファイルチェック
+            if is_excluded_file(file_path):
+                debug_logger.log(f"除外ファイル: {file_path}は処理がスキップされます")
+                print(f"注意: {file_path} は除外リストに含まれるため、自動処理されません。手動で修正してください。")
+                return
             
             # ファイル内容の読み込み
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -620,7 +578,7 @@ class ProcedureParser:
             import traceback
             traceback.print_exc()
             raise e
-        
+    
     def _apply_indentation(self, content, base_indent):
         """コンテンツに基本インデントを適用する"""
         debug_logger.log(f"インデント適用: base_indent='{base_indent}'")
@@ -731,7 +689,7 @@ def save_procedure_copy(procedure_content, howto_dir):
         
         # 最新の番号を取得
         files = os.listdir(howto_dir)
-        procedure_files = [f for f in files if re.match(r'^\d{5}\.md$', f)]
+        procedure_files = [f for f in files if re.match(r'^\d{5}\.md, f)]
         
         if procedure_files:
             latest_num = max([int(f.split('.')[0]) for f in procedure_files])
@@ -758,7 +716,7 @@ def save_procedure_copy(procedure_content, howto_dir):
 
 def main():
     # コマンドライン引数のパース
-    parser = argparse.ArgumentParser(description='手順書パーサー')
+    parser = argparse.ArgumentParser(description='手順書パーサー v2.1.0')
     parser.add_argument('procedure_file', help='手順書ファイルのパス')
     parser.add_argument('output_dir', help='出力ディレクトリ')
     parser.add_argument('--debug', action='store_true', help='デバッグモードを有効にする')
@@ -775,6 +733,10 @@ def main():
     
     debug_logger.log(f"手順書ファイル: {procedure_file}")
     debug_logger.log(f"出力ディレクトリ: {output_dir}")
+    
+    # 除外ファイル拡張子の表示
+    print(f"注意: 以下の拡張子のファイルは処理されません（自動処理から除外）: {', '.join(EXCLUDED_EXTENSIONS)}")
+    print("これらのファイルタイプは新規作成、修正を行いませんので手動で作成するようにしてください。")
     
     # HowToBookディレクトリのパス
     howto_dir = os.path.join(os.path.dirname(output_dir), "HowToBook")
@@ -801,6 +763,7 @@ def main():
     
     print(f"\n環境構築が完了しました。出力先: {output_dir}")
     print("実行コマンドを実行するには、生成された実行スクリプトを使用してください。")
+    print(f"※注意: {', '.join(EXCLUDED_EXTENSIONS)} 形式のファイルは手動で作成または修正してください。")
     
     # デバッグログを閉じる
     debug_logger.close()
