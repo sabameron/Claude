@@ -227,7 +227,7 @@ class ProcedureParser:
         version_without_v = self.version[1:] if self.version and self.version.startswith('v') else ""
         if version_without_v != VERSION:
             debug_logger.log(f"警告: スクリプトのバージョン({VERSION})と手順書の準拠形式バージョン({version_without_v})が一致しません")
-            print(f"警告: スクリプトのバージョン({VERSION})と手順書の準拠形式バージョン({version_without_v})が一致しません")
+            print(f"★警告: スクリプトのバージョン({VERSION})と手順書の準拠形式バージョン({version_without_v})が一致しません")
             response = input("続行しますか？ (y/n): ")
             if response.lower() != 'y':
                 sys.exit(0)
@@ -363,7 +363,7 @@ class ProcedureParser:
                 
                 if len(self.file_modifications[key]) == 0:
                     debug_logger.log(f"警告: ファイル {file_path} に修正区間が見つかりませんでした")
-                    print(f"警告: ファイル {file_path} に修正区間が見つかりませんでした")
+                    print(f"★警告: ファイル {file_path} に修正区間が見つかりませんでした")
             
             # コミットメッセージを保存
             self.commit_messages[key] = commit_msg
@@ -402,7 +402,7 @@ class ProcedureParser:
                 
                 # 除外ファイルチェック
                 if is_excluded_file(file_path):
-                    print(f"注意: {file_path} は除外リストに含まれるため、自動処理されません。手動で{action}してください。")
+                    print(f"★注意: {file_path} は除外リストに含まれるため、自動処理されません。手動で{action}してください。")
                     debug_logger.log(f"除外ファイル: {file_path}は処理がスキップされます")
                     continue
                 
@@ -422,7 +422,7 @@ class ProcedureParser:
                         print(f"ファイル削除: {full_path}")
                     else:
                         debug_logger.log(f"警告: 削除対象ファイル {full_path} が見つかりません")
-                        print(f"警告: 削除対象ファイル {full_path} が見つかりません")
+                        print(f"★警告: 削除対象ファイル {full_path} が見つかりません")
                 
                 elif action == "new":
                     # 新規ファイル作成
@@ -433,7 +433,7 @@ class ProcedureParser:
                         print(f"ファイル作成: {full_path}")
                     else:
                         debug_logger.log(f"警告: ファイル {file_path} の内容が見つかりません")
-                        print(f"警告: ファイル {file_path} の内容が見つかりません")
+                        print(f"★警告: ファイル {file_path} の内容が見つかりません")
                 
                 elif action == "modify":
                     # ファイル修正
@@ -443,7 +443,7 @@ class ProcedureParser:
                         print(f"ファイル更新: {full_path}")
                     else:
                         debug_logger.log(f"警告: ファイル {file_path} の修正情報が見つからないか、ファイルが存在しません")
-                        print(f"警告: ファイル {file_path} の修正情報が見つからないか、ファイルが存在しません")
+                        print(f"★警告: ファイル {file_path} の修正情報が見つからないか、ファイルが存在しません")
             
             except Exception as e:
                 debug_logger.log(f"エラー: ファイル {file_path} の処理に失敗しました: {e}")
@@ -477,7 +477,7 @@ class ProcedureParser:
             # 除外ファイルチェック
             if is_excluded_file(file_path):
                 debug_logger.log(f"除外ファイル: {file_path}は処理がスキップされます")
-                print(f"注意: {file_path} は除外リストに含まれるため、自動処理されません。手動で修正してください。")
+                print(f"★注意: {file_path} は除外リストに含まれるため、自動処理されません。手動で修正してください。")
                 return
             
             # ファイル内容の読み込み
@@ -563,7 +563,7 @@ class ProcedureParser:
                 
                 if start_pos == -1:
                     debug_logger.log(f"開始マーカー '#{start_code}' が見つかりません。この修正はスキップします。")
-                    print(f"開始マーカー '#{start_code}' が見つかりません。この修正はスキップします。")
+                    print(f"★開始マーカー '#{start_code}' が見つかりません。この修正はスキップします。")
                     continue
                 
                 debug_logger.log(f"開始マーカー '{start_marker_used}' を位置 {start_pos} で見つけました")
@@ -622,7 +622,7 @@ class ProcedureParser:
                 
                 if end_pos == -1:
                     debug_logger.log(f"終了マーカー '#{end_code}' が見つかりません。この修正はスキップします。")
-                    print(f"終了マーカー '#{end_code}' が見つかりません。この修正はスキップします。")
+                    print(f"★終了マーカー '#{end_code}' が見つかりません。この修正はスキップします。")
                     continue
                 
                 debug_logger.log(f"終了マーカー '{end_marker_used}' を位置 {end_pos} で見つけました")
@@ -659,7 +659,7 @@ class ProcedureParser:
                 print(f"ファイル {file_path} を更新しました")
             else:
                 debug_logger.log(f"警告: ファイル {file_path} に変更はありませんでした")
-                print(f"警告: ファイル {file_path} に変更はありませんでした")
+                print(f"★警告: ファイル {file_path} に変更はありませんでした")
             
             # バックアップを削除
             os.remove(backup_path)
@@ -672,7 +672,7 @@ class ProcedureParser:
                 shutil.copy2(backup_path, file_path)
                 os.remove(backup_path)
                 debug_logger.log(f"バックアップから復元しました: {backup_path}")
-            print(f"エラー: ファイル修正中にエラーが発生しました: {e}")
+            print(f"★エラー: ファイル修正中にエラーが発生しました: {e}")
             import traceback
             traceback.print_exc()
             raise e
@@ -738,14 +738,14 @@ class ProcedureParser:
                         print(f"Git: コミット完了 - {commit_message}")
                     else:
                         debug_logger.log("Git: 変更がないため、コミットはスキップされました")
-                        print("Git: 変更がないため、コミットはスキップされました")
+                        print("★Git: 変更がないため、コミットはスキップされました")
                 except subprocess.CalledProcessError as e:
                     debug_logger.log(f"Git: コミット中にエラーが発生しました: {e}")
                     debug_logger.log(f"エラー出力: {e.stderr}")
-                    print(f"Git: コミット中にエラーが発生しました: {e}")
+                    print(f"★Git: コミット中にエラーが発生しました: {e}")
             else:
                 debug_logger.log("警告: コミットするファイルがありません")
-                print("警告: コミットするファイルがありません")
+                print("★警告: コミットするファイルがありません")
             
             # カレントディレクトリを戻す
             os.chdir(original_dir)
@@ -754,10 +754,10 @@ class ProcedureParser:
         except subprocess.CalledProcessError as e:
             debug_logger.log(f"Git操作中にエラーが発生しました: {e}")
             debug_logger.log(f"エラー出力: {e.stderr if hasattr(e, 'stderr') else 'なし'}")
-            print(f"Git操作中にエラーが発生しました: {e}")
+            print(f"★Git操作中にエラーが発生しました: {e}")
         except Exception as e:
             debug_logger.log(f"エラー: {e}")
-            print(f"エラー: {e}")
+            print(f"★エラー: {e}")
     
     def generate_summary(self):
         """解析した内容のサマリーを表示する"""
@@ -808,7 +808,7 @@ def save_procedure_copy(procedure_content, howto_dir):
     
     except Exception as e:
         debug_logger.log(f"手順書の保存に失敗しました: {e}")
-        print(f"手順書の保存に失敗しました: {e}")
+        print(f"★手順書の保存に失敗しました: {e}")
         return None
 
 
