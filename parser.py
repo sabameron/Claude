@@ -9,7 +9,7 @@ from pathlib import Path
 import binascii  # デバッグ出力用に追加
 
 # スクリプトのバージョン
-VERSION = "2.1.0"
+VERSION = "2.1.2"
 
 # 処理から除外するファイル拡張子
 EXCLUDED_EXTENSIONS = ['.json', '.env', '.lock', '.md', '.gitignore', '.gitkeep', '.git', '.DS_Store']
@@ -506,32 +506,130 @@ class ProcedureParser:
                 debug_logger.log(f"修正処理: コード管理番号 #{start_code}-#{end_code}")
                 print(f"修正処理: コード管理番号 #{start_code}-#{end_code}")
                 
-                # コード管理番号を直接検索 (# を含む形で)
-                start_marker = f"#{start_code}"
-                end_marker = f"#{end_code}"
+                # ファイル拡張子からファイル種別を判断
+                _, ext = os.path.splitext(file_path.lower())
                 
-                # 開始マーカーの検索
-                start_pos = content.find(start_marker)
+                # コード管理番号を検索するパターンを作成
+                # HTMLコメントやその他のコメント形式を考慮
+                patterns = []
+                
+                # HTML/XMLファイル用パターン
+                if ext in ['.html', '.htm', '.xml', '.svg']:
+                    patterns.extend([
+                        f"<!-- #{start_code} -->",  # HTMLコメント形式
+                        f"#{start_code}",           # 単純な形式（フォールバック）
+                    ])
+                # CSSファイル用パターン
+                elif ext in ['.css']:
+                    patterns.extend([
+                        f"/* #{start_code} */",     # CSSコメント形式
+                        f"#{start_code}",           # 単純な形式（フォールバック）
+                    ])
+                # PHPやJavaScript等のC系言語用パターン
+                elif ext in ['.php', '.js', '.ts', '.java', '.cs', '.cpp', '.c', '.h']:
+                    patterns.extend([
+                        f"// #{start_code}",        # 単一行コメント形式
+                        f"/* #{start_code} */",     # 複数行コメント形式
+                        f"#{start_code}",           # 単純な形式（フォールバック）
+                    ])
+                # Python、Ruby、シェルスクリプト用パターン
+                elif ext in ['.py', '.rb', '.sh', '.yml', '.yaml']:
+                    patterns.extend([
+                        f"# #{start_code}",         # シャープコメント形式
+                        f"#{start_code}",           # 単純な形式（フォールバック）
+                    ])
+                # デフォルトパターン（すべての形式を試す）
+                else:
+                    patterns.extend([
+                        f"<!-- #{start_code} -->",  # HTMLコメント形式
+                        f"// #{start_code}",        # 単一行コメント形式
+                        f"/* #{start_code} */",     # 複数行コメント形式
+                        f"# #{start_code}",         # シャープコメント形式
+                        f"#{start_code}",           # 単純な形式（フォールバック）
+                    ])
+                
+                # 開始マーカーを検索
+                start_pos = -1
+                start_marker_used = None
+                
+                for pattern in patterns:
+                    debug_logger.log(f"パターン '{pattern}' で開始マーカーを検索")
+                    pos = content.find(pattern)
+                    if pos != -1:
+                        start_pos = pos
+                        start_marker_used = pattern
+                        debug_logger.log(f"開始マーカー '{pattern}' を位置 {pos} で見つけました")
+                        break
+                
                 if start_pos == -1:
-                    debug_logger.log(f"開始マーカー '{start_marker}' が見つかりません。この修正はスキップします。")
-                    print(f"開始マーカー '{start_marker}' が見つかりません。この修正はスキップします。")
+                    debug_logger.log(f"開始マーカー '#{start_code}' が見つかりません。この修正はスキップします。")
+                    print(f"開始マーカー '#{start_code}' が見つかりません。この修正はスキップします。")
                     continue
                 
-                debug_logger.log(f"開始マーカー '{start_marker}' を位置 {start_pos} で見つけました")
-                print(f"開始マーカー '{start_marker}' を位置 {start_pos} で見つけました")
+                debug_logger.log(f"開始マーカー '{start_marker_used}' を位置 {start_pos} で見つけました")
+                print(f"開始マーカー '{start_marker_used}' を位置 {start_pos} で見つけました")
                 
-                # 終了マーカーの検索 (開始位置以降を検索)
-                end_pos = content.find(end_marker, start_pos + len(start_marker))
+                # 終了マーカーを検索するパターンを作成
+                end_patterns = []
+                
+                # HTML/XMLファイル用パターン
+                if ext in ['.html', '.htm', '.xml', '.svg']:
+                    end_patterns.extend([
+                        f"<!-- #{end_code} -->",    # HTMLコメント形式
+                        f"#{end_code}",             # 単純な形式（フォールバック）
+                    ])
+                # CSSファイル用パターン
+                elif ext in ['.css']:
+                    end_patterns.extend([
+                        f"/* #{end_code} */",       # CSSコメント形式
+                        f"#{end_code}",             # 単純な形式（フォールバック）
+                    ])
+                # PHPやJavaScript等のC系言語用パターン
+                elif ext in ['.php', '.js', '.ts', '.java', '.cs', '.cpp', '.c', '.h']:
+                    end_patterns.extend([
+                        f"// #{end_code}",          # 単一行コメント形式
+                        f"/* #{end_code} */",       # 複数行コメント形式
+                        f"#{end_code}",             # 単純な形式（フォールバック）
+                    ])
+                # Python、Ruby、シェルスクリプト用パターン
+                elif ext in ['.py', '.rb', '.sh', '.yml', '.yaml']:
+                    end_patterns.extend([
+                        f"# #{end_code}",           # シャープコメント形式
+                        f"#{end_code}",             # 単純な形式（フォールバック）
+                    ])
+                # デフォルトパターン（すべての形式を試す）
+                else:
+                    end_patterns.extend([
+                        f"<!-- #{end_code} -->",    # HTMLコメント形式
+                        f"// #{end_code}",          # 単一行コメント形式
+                        f"/* #{end_code} */",       # 複数行コメント形式
+                        f"# #{end_code}",           # シャープコメント形式
+                        f"#{end_code}",             # 単純な形式（フォールバック）
+                    ])
+                
+                # 終了マーカーを検索 (開始位置以降を検索)
+                end_pos = -1
+                end_marker_used = None
+                
+                for pattern in end_patterns:
+                    debug_logger.log(f"パターン '{pattern}' で終了マーカーを検索")
+                    pos = content.find(pattern, start_pos + len(start_marker_used))
+                    if pos != -1:
+                        end_pos = pos
+                        end_marker_used = pattern
+                        debug_logger.log(f"終了マーカー '{pattern}' を位置 {pos} で見つけました")
+                        break
+                
                 if end_pos == -1:
-                    debug_logger.log(f"終了マーカー '{end_marker}' が見つかりません。この修正はスキップします。")
-                    print(f"終了マーカー '{end_marker}' が見つかりません。この修正はスキップします。")
+                    debug_logger.log(f"終了マーカー '#{end_code}' が見つかりません。この修正はスキップします。")
+                    print(f"終了マーカー '#{end_code}' が見つかりません。この修正はスキップします。")
                     continue
                 
-                debug_logger.log(f"終了マーカー '{end_marker}' を位置 {end_pos} で見つけました")
-                print(f"終了マーカー '{end_marker}' を位置 {end_pos} で見つけました")
+                debug_logger.log(f"終了マーカー '{end_marker_used}' を位置 {end_pos} で見つけました")
+                print(f"終了マーカー '{end_marker_used}' を位置 {end_pos} で見つけました")
                 
                 # 終了マーカーのサイズを加える
-                end_pos += len(end_marker)
+                end_pos += len(end_marker_used)
                 
                 # この範囲を新しい内容で置き換え
                 before = content[start_pos:end_pos]
@@ -689,7 +787,7 @@ def save_procedure_copy(procedure_content, howto_dir):
         
         # 最新の番号を取得
         files = os.listdir(howto_dir)
-        procedure_files = [f for f in files if re.match(r'^\d{5}\.md, f)]
+        procedure_files = [f for f in files if re.match(r'^\d{5}\.md', f)]
         
         if procedure_files:
             latest_num = max([int(f.split('.')[0]) for f in procedure_files])
